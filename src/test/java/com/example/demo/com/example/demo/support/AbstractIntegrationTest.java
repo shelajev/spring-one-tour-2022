@@ -33,32 +33,41 @@ import java.io.IOException;
 @SpringBootTest(
   webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
   properties = {
-
+//    "spring.datasource.url=jdbc:tc:postgresql:14-alpine:///"
   }
 )
 public class AbstractIntegrationTest {
-
+//
   static Network network = Network.newNetwork();
 
+
   static GenericContainer<?> redis = new GenericContainer<>("redis:6-alpine")
-    .withExposedPorts(6379).withNetwork(network).withNetworkAliases("redis");
+    .withExposedPorts(6379).withNetwork(network);
+
+  static ToxiproxyContainer toxiproxyContainer = new ToxiproxyContainer("shopify/toxiproxy:2.1.0").withNetwork(network);;
 
   static PostgreSQLContainer<?> postgreSQLContainer =
     new PostgreSQLContainer<>("postgres:14-alpine")
-      .withCopyFileToContainer(MountableFile.forClasspathResource("schema.sql"), "");
-
-  static RedpandaContainer kafka = new RedpandaContainer("docker.redpanda.com/vectorized/redpanda:v22.2.1");
+      .withCopyFileToContainer(
+        MountableFile.forClasspathResource("schema.sql"), "/docker-entrypoint-initdb.d/");
+//
+  static KafkaContainer kafka = new KafkaContainer(
+    DockerImageName.parse("confluentinc/cp-kafka:5.4.6"));
 
   @DynamicPropertySource
   public static void setupThings(DynamicPropertyRegistry registry) throws IOException {
-    Startables.deepStart(redis, kafka, postgreSQLContainer).join();
+    Startables.deepStart(redis, kafka, postgreSQLContainer, toxiproxyContainer).join();
+
+    ToxiproxyContainer.ContainerProxy redis1 = toxiproxyContainer.getProxy(redis, 6379);
+
+    registry.add("spring.redis.host", redis1::getContainerIpAddress);
+    registry.add("spring.redis.port", redis1::getProxyPort);
+
+    redis1.toxics().latency("latency", ToxicDirection.DOWNSTREAM, 2000);
 
     registry.add("spring.datasource.url", postgreSQLContainer::getJdbcUrl);
     registry.add("spring.datasource.username", postgreSQLContainer::getUsername);
     registry.add("spring.datasource.password", postgreSQLContainer::getPassword);
-
-    registry.add("spring.redis.host", redis::getHost);
-    registry.add("spring.redis.port", redis::getFirstMappedPort);
 
     registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
   }
